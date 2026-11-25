@@ -1,0 +1,183 @@
+name: Build Andes RISC-V GNU Toolchain
+
+# Builds the Andes (nds) glibc toolchains from the scripts in nds/.
+# Every configuration runs as a separate matrix job and is uploaded as an
+# artifact; pushing a tag named nds-* also attaches them to a GitHub release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: nds-gnu-toolchain branch or tag
+        required: false
+        default: ast-v5_2_2-release-v5
+      toolchains:
+        description: Space-separated toolchain names (empty = default nds32le set)
+        required: false
+        default: ""
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - "nds-*"
+    paths:
+      - "nds/**"
+      - ".github/workflows/nds-toolchain.yml"
+  pull_request:
+    paths:
+      - "nds/**"
+      - ".github/workflows/nds-toolchain.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nds-toolchain-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare build matrix
+    runs-on: ubuntu-22.04
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      branch: ${{ steps.vars.outputs.branch }}
+      branch_slug: ${{ steps.vars.outputs.branch_slug }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve source branch
+        id: vars
+        env:
+          INPUT_BRANCH: ${{ github.event.inputs.branch }}
+        run: |
+          branch="${INPUT_BRANCH:-ast-v5_2_2-release-v5}"
+          echo "branch=${branch}" >> "${GITHUB_OUTPUT}"
+          echo "branch_slug=${branch//\//-}" >> "${GITHUB_OUTPUT}"
+
+      - name: Resolve toolchain list
+        id: matrix
+        env:
+          REQUESTED: ${{ github.event.inputs.toolchains }}
+        run: |
+          default="nds32le-linux-glibc-v5 nds32le-linux-glibc-v5d"
+          all="$(find nds -maxdepth 1 -name 'build-*.sh' -printf '%f\n' \
+            | sed -e 's/^build-//' -e 's/\.sh$//' | sort | tr '\n' ' ')"
+          selected="${REQUESTED:-$default}"
+
+          for name in ${selected}; do
+            case " ${all} " in
+              *" ${name} "*) ;;
+              *) echo "unknown toolchain: ${name}" >&2; exit 1 ;;
+            esac
+          done
+
+          json="$(printf '%s\n' ${selected} | jq -R -s -c 'split("\n") | map(select(length > 0))')"
+          echo "matrix={\"toolchain\":${json}}" >> "${GITHUB_OUTPUT}"
+
+  build:
+    name: Build ${{ matrix.toolchain }}
+    needs: prepare
+    runs-on: ubuntu-22.04
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    env:
+      NDS_BRANCH: ${{ needs.prepare.outputs.branch }}
+      NDS_SRC_DIR: ${{ github.workspace }}/.sources/nds-gnu-toolchain
+      NDS_BUILD_ROOT: ${{ github.workspace }}/build
+      NDS_OUTPUT_DIR: ${{ github.workspace }}/output
+      NDS_KEEP_BUILD: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /usr/local/share/boost \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/swift
+          sudo apt-get clean
+          df -h /
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            autoconf automake bc bison bzip2 flex gawk gperf git \
+            libexpat1-dev libgmp-dev libmpc-dev libmpfr-dev libncurses-dev \
+            libtool m4 patchutils python3 texinfo wget zlib1g-dev zstd
+
+      - name: Show host toolchain
+        run: |
+          gcc --version | head -n 1
+          ld --version | head -n 1
+          nproc
+
+      - name: Build ${{ matrix.toolchain }}
+        run: ./nds/build-${{ matrix.toolchain }}.sh
+
+      - name: Package toolchain
+        run: |
+          cd output
+          artifact="${{ matrix.toolchain }}-${{ needs.prepare.outputs.branch_slug }}.tar.zst"
+          tar --zstd -cf "${artifact}" "${{ matrix.toolchain }}"
+          sha256sum "${artifact}" > "${artifact}.sha256"
+          ls -lh
+
+      - name: Verify packaged toolchain
+        run: |
+          artifact="${{ matrix.toolchain }}-${{ needs.prepare.outputs.branch_slug }}.tar.zst"
+          tmpdir="$(mktemp -d)"
+          tar --zstd -xf "output/${artifact}" -C "${tmpdir}"
+
+          gcc_bin="$(find "${tmpdir}/${{ matrix.toolchain }}/bin" -maxdepth 1 -name '*-gcc' | head -n 1)"
+          "${gcc_bin}" --version
+          printf 'int main(void) { return 0; }\n' > "${tmpdir}/hello.c"
+          "${gcc_bin}" "${tmpdir}/hello.c" -o "${tmpdir}/hello"
+          file "${tmpdir}/hello"
+          rm -rf "${tmpdir}"
+
+      - name: Upload toolchain
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.toolchain }}
+          path: |
+            output/*.tar.zst
+            output/*.sha256
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Attach toolchains to release
+    needs:
+      - prepare
+      - build
+    if: startsWith(github.ref, 'refs/tags/nds-')
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          ls -lh artifacts
+          gh release create "${GITHUB_REF_NAME}" artifacts/* \
+            --generate-notes \
+            --title "${GITHUB_REF_NAME}"

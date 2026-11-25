@@ -1,0 +1,8 @@
+# Build caches and outputs
+.sources/
+build/
+output/
+
+# Packaged toolchains
+*.tar.zst
+*.sha256
