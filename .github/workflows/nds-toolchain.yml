@@ -12,7 +12,7 @@ on:
         required: false
         default: ast-v5_2_2-release-v5
       toolchains:
-        description: Space-separated toolchain names (empty = default nds32le set)
+        description: Space-separated toolchain names (empty = nds32le-linux-glibc-v5d)
         required: false
         default: ""
   push:
@@ -62,7 +62,7 @@ jobs:
         env:
           REQUESTED: ${{ github.event.inputs.toolchains }}
         run: |
-          default="nds32le-linux-glibc-v5 nds32le-linux-glibc-v5d"
+          default="nds32le-linux-glibc-v5d"
           all="$(find nds -maxdepth 1 -name 'build-*.sh' -printf '%f\n' \
             | sed -e 's/^build-//' -e 's/\.sh$//' | sort | tr '\n' ' ')"
           selected="${REQUESTED:-$default}"

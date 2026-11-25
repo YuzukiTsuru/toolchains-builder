@@ -82,16 +82,16 @@ NDS_KEEP_BUILD=0 \
 
 ### CI
 
-`.github/workflows/nds-toolchain.yml` builds the two `nds32le` configurations
-by default in a matrix on `ubuntu-22.04` (the `nds64le` scripts stay available
-and can be selected manually). It runs on pushes that touch `nds/`, on pull
-requests, and on manual dispatch:
+`.github/workflows/nds-toolchain.yml` builds
+`nds32le-linux-glibc-v5d` by default in a matrix on `ubuntu-22.04` (the other
+scripts stay available and can be selected manually). It runs on pushes that
+touch `nds/`, on pull requests, and on manual dispatch:
 
 - `branch`: upstream branch or tag to build (default
   `ast-v5_2_2-release-v5`)
 - `toolchains`: space-separated subset, e.g.
   `nds32le-linux-glibc-v5d` or `nds64le-linux-glibc-v5d`
-  (empty builds the two `nds32le` configurations)
+  (empty builds `nds32le-linux-glibc-v5d`)
 
 Each job uploads a `zstd` tarball and its SHA-256 as an artifact. Pushing a
 tag named `nds-*` additionally attaches all tarballs to a GitHub release.
