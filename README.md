@@ -12,7 +12,7 @@ output/     installed toolchains (generated)
 .sources/   upstream source checkouts (generated)
 ```
 
-## Andes GNU toolchain 5.2.2 (glibc)
+## Andes GNU toolchain 5.2.2 (glibc / musl)
 
 The scripts build the `ast-v5_2_2-release-v5` branch of
 [andestech/nds-gnu-toolchain](https://github.com/andestech/nds-gnu-toolchain):
@@ -21,11 +21,13 @@ The scripts build the `ast-v5_2_2-release-v5` branch of
 | --- | --- | --- | --- | --- |
 | `nds/build-nds32le-linux-glibc-v5.sh` | riscv32-linux | rv32imacxandes | ilp32 | 32 |
 | `nds/build-nds32le-linux-glibc-v5d.sh` | riscv32-linux | rv32imafdcxandes | ilp32d | 32 |
+| `nds/build-nds32le-linux-musl-v5d.sh` | riscv32-linux-musl | rv32imafdcxandes | ilp32d | 32 |
 | `nds/build-nds64le-linux-glibc-v5.sh` | riscv64-linux | rv64imacxandes | lp64 | 64 |
 | `nds/build-nds64le-linux-glibc-v5d.sh` | riscv64-linux | rv64imafdcxandes | lp64d | 64 |
 
 Component versions in this release: GCC 10.4, binutils 2.38, glibc 2.35,
-GDB 12, Linux 5.4 UAPI headers.
+GDB 12, Linux 5.4 UAPI headers. The musl toolchain uses musl 1.2.5 (the
+first release with riscv32 support).
 
 ### Requirements
 
@@ -35,7 +37,7 @@ Ubuntu 22.04 container.
 
 ```sh
 sudo apt-get install -y --no-install-recommends \
-  autoconf automake bc bison bzip2 flex gawk gperf git \
+  autoconf automake bc bison bzip2 curl flex gawk gperf git \
   libexpat1-dev libgmp-dev libmpc-dev libmpfr-dev libncurses-dev \
   libtool m4 patchutils python3 texinfo wget zlib1g-dev zstd
 ```
@@ -44,6 +46,12 @@ sudo apt-get install -y --no-install-recommends \
 
 ```sh
 ./nds/build-nds32le-linux-glibc-v5d.sh
+```
+
+The musl variant uses the same workflow:
+
+```sh
+./nds/build-nds32le-linux-musl-v5d.sh
 ```
 
 The script clones the upstream repository and its submodules into
@@ -70,6 +78,10 @@ anywhere.
 | `NDS_KEEP_BUILD` | `1` | `0` deletes each stage's build tree after install |
 | `NDS_CLEAN` | `0` | `1` deletes the build tree and prefix first |
 | `NDS_DOWNLOAD_PREREQ` | `auto` | `auto`/`0`/`1`: use system GMP/MPFR/MPC or download them |
+| `NDS_MUSL_VERSION` | `1.2.5` | musl release used by the musl scripts |
+| `NDS_MUSL_URL` | musl.libc.org release URL | musl source tarball |
+| `NDS_MUSL_SHA256` | built-in 1.2.5 hash | expected tarball SHA256 (empty disables the check) |
+| `NDS_MUSL_SRC_DIR` | `.sources/musl-<version>` | extracted musl source |
 
 Example:
 
@@ -90,7 +102,7 @@ touch `nds/`, on pull requests, and on manual dispatch:
 - `branch`: upstream branch or tag to build (default
   `ast-v5_2_2-release-v5`)
 - `toolchains`: space-separated subset, e.g.
-  `nds32le-linux-glibc-v5d` or `nds64le-linux-glibc-v5d`
+  `nds32le-linux-glibc-v5d` or `nds32le-linux-musl-v5d`
   (empty builds `nds32le-linux-glibc-v5d`)
 
 Each job uploads a `zstd` tarball and its SHA-256 as an artifact. Pushing a
