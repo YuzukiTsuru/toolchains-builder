@@ -249,6 +249,11 @@ install_target_libs() {
 }
 
 write_toolchain_info() {
+  local glibc_version=""
+  if [ -f "${GLIBC_SRC}/version.h" ]; then
+    glibc_version="$(sed -n 's/^#define VERSION "\(.*\)"/\1/p' "${GLIBC_SRC}/version.h" | head -n 1)"
+  fi
+
   {
     echo "toolchain: ${TOOLCHAIN_NAME}"
     echo "source: ${NDS_REPO_URL}"
@@ -258,6 +263,7 @@ write_toolchain_info() {
     echo "arch: ${ARCH}"
     echo "abi: ${ABI}"
     echo "cpu: ${CPU}"
+    echo "libc: glibc${glibc_version:+ ${glibc_version}}"
     echo "built: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
     echo "host: $(uname -srm)"
   } > "${PREFIX}/toolchain-info.txt"

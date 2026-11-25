@@ -104,9 +104,72 @@ touch `nds/`, on pull requests, and on manual dispatch:
 - `toolchains`: space-separated subset, e.g.
   `nds32le-linux-glibc-v5d` or `nds32le-linux-musl-v5d`
   (empty builds `nds32le-linux-glibc-v5d`)
+- `release_tag`: release to publish (default `nds-latest`; empty = build
+  artifacts only)
 
-Each job uploads a `zstd` tarball and its SHA-256 as an artifact. Pushing a
-tag named `nds-*` additionally attaches all tarballs to a GitHub release.
+Each job uploads a `zstd` tarball, its SHA-256 and a small metadata JSON as
+workflow artifacts.
+
+### Releases and manifest
+
+Manual runs publish to the rolling `nds-latest` release by default; pushing
+a tag named `nds-*` publishes to that tag instead. A run that builds several
+toolchains publishes them together; separate runs publishing to the same tag
+merge their entries by toolchain name, so glibc and musl can be published
+incrementally.
+
+Every release contains:
+
+- `<toolchain>-<branch>.tar.zst` and `.sha256`
+- `<toolchain>.json` metadata
+- `manifest.json` listing every toolchain in the release
+
+Stable manifest URL:
+
+```
+https://github.com/<owner>/<repo>/releases/download/nds-latest/manifest.json
+```
+
+Since `nds-latest` is marked as the latest release, this also works:
+
+```
+https://github.com/<owner>/<repo>/releases/latest/download/manifest.json
+```
+
+The manifest contains the release tag, upstream branch, generation time and
+one entry per toolchain with target/arch/ABI/libc, source commit, file name,
+SHA-256, byte size and direct download URL:
+
+```json
+{
+  "schema": 1,
+  "generated_at": "2026-11-25T12:00:00Z",
+  "release": {
+    "tag": "nds-latest",
+    "url": "https://github.com/<owner>/<repo>/releases/tag/nds-latest",
+    "manifest_url": "https://github.com/<owner>/<repo>/releases/download/nds-latest/manifest.json"
+  },
+  "upstream": {
+    "repository": "https://github.com/andestech/nds-gnu-toolchain",
+    "branch": "ast-v5_2_2-release-v5"
+  },
+  "toolchains": [
+    {
+      "name": "nds32le-linux-glibc-v5d",
+      "target": "riscv32-linux",
+      "arch": "rv32imafdcxandes",
+      "abi": "ilp32d",
+      "libc": "glibc 2.35",
+      "branch": "ast-v5_2_2-release-v5",
+      "commit": "f73a8e2d655081707cdf0d9acd37d048987307ee",
+      "file": "nds32le-linux-glibc-v5d-ast-v5_2_2-release-v5.tar.zst",
+      "sha256": "...",
+      "size": 462000000,
+      "url": "https://github.com/<owner>/<repo>/releases/download/nds-latest/nds32le-linux-glibc-v5d-ast-v5_2_2-release-v5.tar.zst"
+    }
+  ]
+}
+```
 
 Locally the same commands can be reproduced outside Actions; the scripts do
 not depend on any CI-specific tooling.

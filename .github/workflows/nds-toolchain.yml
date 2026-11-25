@@ -15,6 +15,10 @@ on:
         description: Space-separated toolchain names (empty = nds32le-linux-glibc-v5d)
         required: false
         default: ""
+      release_tag:
+        description: Release tag to publish (empty = build artifacts only)
+        required: false
+        default: nds-latest
   push:
     branches:
       - main
@@ -44,6 +48,7 @@ jobs:
       matrix: ${{ steps.matrix.outputs.matrix }}
       branch: ${{ steps.vars.outputs.branch }}
       branch_slug: ${{ steps.vars.outputs.branch_slug }}
+      release_tag: ${{ steps.release.outputs.release_tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -56,6 +61,28 @@ jobs:
           branch="${INPUT_BRANCH:-ast-v5_2_2-release-v5}"
           echo "branch=${branch}" >> "${GITHUB_OUTPUT}"
           echo "branch_slug=${branch//\//-}" >> "${GITHUB_OUTPUT}"
+
+      - name: Resolve release tag
+        id: release
+        env:
+          INPUT_RELEASE_TAG: ${{ github.event.inputs.release_tag }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          case "${EVENT_NAME}:${REF}" in
+            workflow_dispatch:*) tag="${INPUT_RELEASE_TAG}" ;;
+            push:refs/tags/nds-*) tag="${REF_NAME}" ;;
+            *) tag="" ;;
+          esac
+
+          if [ -n "${tag}" ]; then
+            case "${tag}" in
+              *[!A-Za-z0-9._-]*) echo "invalid release tag: ${tag}" >&2; exit 1 ;;
+            esac
+          fi
+
+          echo "release_tag=${tag}" >> "${GITHUB_OUTPUT}"
 
       - name: Resolve toolchain list
         id: matrix
@@ -132,6 +159,48 @@ jobs:
           sha256sum "${artifact}" > "${artifact}.sha256"
           ls -lh
 
+      - name: Write toolchain metadata
+        run: |
+          cd output
+          name="${{ matrix.toolchain }}"
+          info="${name}/toolchain-info.txt"
+
+          field() { sed -n "s/^$1: //p" "${info}" | head -n 1; }
+
+          target="$(field target)"
+          arch="$(field arch)"
+          abi="$(field abi)"
+          libc="$(field libc)"
+          branch="$(field branch)"
+          commit="$(field commit)"
+          if [ -z "${libc}" ]; then
+            case "${name}" in
+              *-musl-*) libc="musl" ;;
+              *) libc="glibc" ;;
+            esac
+          fi
+
+          artifact="${name}-${{ needs.prepare.outputs.branch_slug }}.tar.zst"
+          sha256="$(cut -d ' ' -f 1 "${artifact}.sha256")"
+          size="$(stat -c %s "${artifact}")"
+
+          jq -n \
+            --arg name "${name}" \
+            --arg target "${target}" \
+            --arg arch "${arch}" \
+            --arg abi "${abi}" \
+            --arg libc "${libc}" \
+            --arg branch "${branch}" \
+            --arg commit "${commit}" \
+            --arg file "${artifact}" \
+            --arg sha256 "${sha256}" \
+            --argjson size "${size}" \
+            '{name: $name, target: $target, arch: $arch, abi: $abi,
+              libc: $libc, branch: $branch, commit: $commit,
+              file: $file, sha256: $sha256, size: $size}' \
+            > "${name}.json"
+          cat "${name}.json"
+
       - name: Verify packaged toolchain
         run: |
           artifact="${{ matrix.toolchain }}-${{ needs.prepare.outputs.branch_slug }}.tar.zst"
@@ -152,19 +221,28 @@ jobs:
           path: |
             output/*.tar.zst
             output/*.sha256
+            output/*.json
           compression-level: 0
           if-no-files-found: error
           retention-days: 14
 
   release:
-    name: Attach toolchains to release
+    name: Publish toolchain release
     needs:
       - prepare
       - build
-    if: startsWith(github.ref, 'refs/tags/nds-')
+    if: needs.prepare.outputs.release_tag != ''
     runs-on: ubuntu-22.04
     permissions:
       contents: write
+    concurrency:
+      group: release-${{ needs.prepare.outputs.release_tag }}
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+      UPSTREAM_BRANCH: ${{ needs.prepare.outputs.branch }}
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v4
@@ -172,12 +250,75 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: Create release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
+      - name: Verify checksums
         run: |
-          ls -lh artifacts
-          gh release create "${GITHUB_REF_NAME}" artifacts/* \
-            --generate-notes \
-            --title "${GITHUB_REF_NAME}"
+          cd artifacts
+          sha256sum -c ./*.sha256
+
+      - name: Build manifest
+        run: |
+          mkdir -p old-manifest
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release download "${RELEASE_TAG}" \
+              --pattern manifest.json --dir old-manifest >/dev/null 2>&1 || true
+          fi
+
+          jq -s '.' artifacts/*.json > new-entries.json
+          if [ -f old-manifest/manifest.json ]; then
+            jq -s '((.[0].toolchains // []) + .[1]) | group_by(.name) | map(last)' \
+              old-manifest/manifest.json new-entries.json > entries.json
+          else
+            cp new-entries.json entries.json
+          fi
+
+          url_prefix="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
+          jq -n \
+            --arg schema "1" \
+            --arg generated "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+            --arg repo "${GITHUB_REPOSITORY}" \
+            --arg tag "${RELEASE_TAG}" \
+            --arg branch "${UPSTREAM_BRANCH}" \
+            --arg url_prefix "${url_prefix}" \
+            --slurpfile entries entries.json \
+            '{
+              schema: ($schema | tonumber),
+              generated_at: $generated,
+              release: {
+                tag: $tag,
+                url: ("https://github.com/" + $repo + "/releases/tag/" + $tag),
+                manifest_url: ($url_prefix + "/manifest.json")
+              },
+              upstream: {
+                repository: "https://github.com/andestech/nds-gnu-toolchain",
+                branch: $branch
+              },
+              toolchains: ($entries[0] | sort_by(.name) | map(. + {url: ($url_prefix + "/" + .file)}))
+            }' > artifacts/manifest.json
+          cat artifacts/manifest.json
+
+      - name: Publish release
+        run: |
+          url_prefix="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
+          notes="$(printf 'Toolchain packages and manifest.json are attached.\n\nManifest: %s/manifest.json' "${url_prefix}")"
+
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release upload "${RELEASE_TAG}" artifacts/* --clobber
+            gh release edit "${RELEASE_TAG}" \
+              --title "${RELEASE_TAG}" --notes "${notes}" --latest
+          else
+            gh release create "${RELEASE_TAG}" artifacts/* \
+              --target "${GITHUB_SHA}" \
+              --title "${RELEASE_TAG}" \
+              --notes "${notes}" \
+              --latest
+          fi
+
+          {
+            echo "## Release ${RELEASE_TAG}"
+            echo ""
+            echo "Manifest: ${url_prefix}/manifest.json"
+            echo ""
+            echo '```json'
+            cat artifacts/manifest.json
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
