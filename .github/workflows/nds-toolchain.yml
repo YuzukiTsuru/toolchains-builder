@@ -140,7 +140,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             autoconf automake bc bison bzip2 curl flex gawk gperf git \
             libexpat1-dev libgmp-dev libmpc-dev libmpfr-dev libncurses-dev \
-            libtool m4 patchutils python3 texinfo wget zlib1g-dev zstd
+            libtool m4 patch patchutils python3 texinfo wget zlib1g-dev zstd
 
       - name: Show host toolchain
         run: |
@@ -235,6 +235,7 @@ jobs:
     runs-on: ubuntu-22.04
     permissions:
       contents: write
+      actions: read
     concurrency:
       group: release-${{ needs.prepare.outputs.release_tag }}
       cancel-in-progress: false
@@ -258,9 +259,24 @@ jobs:
       - name: Build manifest
         run: |
           mkdir -p old-manifest
+          existing_assets=""
           if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
-            gh release download "${RELEASE_TAG}" \
-              --pattern manifest.json --dir old-manifest >/dev/null 2>&1 || true
+            existing_assets="$(gh release view "${RELEASE_TAG}" --json assets \
+              --jq '.assets[].name' 2>/dev/null || true)"
+          fi
+
+          if printf '%s\n' "${existing_assets}" | grep -qx 'manifest.json'; then
+            for attempt in 1 2 3; do
+              if gh release download "${RELEASE_TAG}" \
+                   --pattern manifest.json --dir old-manifest >/dev/null 2>&1; then
+                break
+              fi
+              sleep 3
+            done
+            [ -f old-manifest/manifest.json ] || {
+              echo "failed to download existing manifest" >&2
+              exit 1
+            }
           fi
 
           jq -s '.' artifacts/*.json > new-entries.json

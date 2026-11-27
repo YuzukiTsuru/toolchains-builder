@@ -26,8 +26,9 @@ The scripts build the `ast-v5_2_2-release-v5` branch of
 | `nds/build-nds64le-linux-glibc-v5d.sh` | riscv64-linux | rv64imafdcxandes | lp64d | 64 |
 
 Component versions in this release: GCC 10.4, binutils 2.38, glibc 2.35,
-GDB 12, Linux 5.4 UAPI headers. The musl toolchain uses musl 1.2.5 (the
-first release with riscv32 support).
+GDB 12, Linux 5.4 UAPI headers. The musl toolchain uses musl 1.2.4 plus the
+Andes patch in `nds/patches/musl-1.2.4-andes.patch`, which adds riscv32
+support and carries the vendor bug fixes.
 
 ### Requirements
 
@@ -39,7 +40,7 @@ Ubuntu 22.04 container.
 sudo apt-get install -y --no-install-recommends \
   autoconf automake bc bison bzip2 curl flex gawk gperf git \
   libexpat1-dev libgmp-dev libmpc-dev libmpfr-dev libncurses-dev \
-  libtool m4 patchutils python3 texinfo wget zlib1g-dev zstd
+  libtool m4 patch patchutils python3 texinfo wget zlib1g-dev zstd
 ```
 
 ### Build
@@ -78,10 +79,11 @@ anywhere.
 | `NDS_KEEP_BUILD` | `1` | `0` deletes each stage's build tree after install |
 | `NDS_CLEAN` | `0` | `1` deletes the build tree and prefix first |
 | `NDS_DOWNLOAD_PREREQ` | `auto` | `auto`/`0`/`1`: use system GMP/MPFR/MPC or download them |
-| `NDS_MUSL_VERSION` | `1.2.5` | musl release used by the musl scripts |
+| `NDS_MUSL_VERSION` | `1.2.4` | musl release used by the musl scripts |
 | `NDS_MUSL_URL` | musl.libc.org release URL | musl source tarball |
-| `NDS_MUSL_SHA256` | built-in 1.2.5 hash | expected tarball SHA256 (empty disables the check) |
+| `NDS_MUSL_SHA256` | built-in 1.2.4 hash | expected tarball SHA256 (empty disables the check) |
 | `NDS_MUSL_SRC_DIR` | `.sources/musl-<version>` | extracted musl source |
+| `NDS_MUSL_PATCH` | `nds/patches/musl-<version>-andes.patch` | patch applied after extraction (empty disables) |
 
 Example:
 

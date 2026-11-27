@@ -27,11 +27,13 @@
 #   NDS_CLEAN             1 removes the build tree and install prefix first (default: 0)
 #   NDS_DOWNLOAD_PREREQ   auto|0|1, run gcc/contrib/download_prerequisites
 #                         (default: auto, i.e. only when system GMP/MPFR/MPC are absent)
-#   NDS_MUSL_VERSION      musl release to build (default: 1.2.5)
+#   NDS_MUSL_VERSION      musl release to build (default: 1.2.4)
 #   NDS_MUSL_URL          musl release tarball URL
 #   NDS_MUSL_SHA256       expected tarball SHA256 (empty disables the check)
 #   NDS_MUSL_SRC_DIR      extracted musl source
 #                         (default: <sources>/musl-<version>)
+#   NDS_MUSL_PATCH        patch applied after extraction
+#                         (default: nds/patches/musl-<version>-andes.patch)
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
@@ -56,10 +58,11 @@ NDS_KEEP_BUILD="${NDS_KEEP_BUILD:-1}"
 NDS_CLEAN="${NDS_CLEAN:-0}"
 NDS_DOWNLOAD_PREREQ="${NDS_DOWNLOAD_PREREQ:-auto}"
 
-NDS_MUSL_VERSION="${NDS_MUSL_VERSION:-1.2.5}"
+NDS_MUSL_VERSION="${NDS_MUSL_VERSION:-1.2.4}"
 NDS_MUSL_URL="${NDS_MUSL_URL:-https://musl.libc.org/releases/musl-${NDS_MUSL_VERSION}.tar.gz}"
-NDS_MUSL_SHA256="${NDS_MUSL_SHA256:-a9a118bbe84d8764da0ea0d28b3ab3fae8477fc7e4085d90102b8596fc7c75e4}"
+NDS_MUSL_SHA256="${NDS_MUSL_SHA256:-7a35eae33d5372a7c0da1188de798726f68825513b7ae3ebe97aaaa52114f039}"
 NDS_MUSL_SRC_DIR="$(abspath "${NDS_MUSL_SRC_DIR:-$(dirname -- "${NDS_SRC_DIR}")/musl-${NDS_MUSL_VERSION}}")"
+NDS_MUSL_PATCH="${NDS_MUSL_PATCH:-${REPO_ROOT}/nds/patches/musl-${NDS_MUSL_VERSION}-andes.patch}"
 MUSL_SRC="${NDS_MUSL_SRC_DIR}"
 
 PREFIX="$(abspath "${NDS_PREFIX:-${NDS_OUTPUT_DIR}/${TOOLCHAIN_NAME}}")"
@@ -77,7 +80,7 @@ die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 require_tools() {
   local tool
-  for tool in git make tar realpath curl sha256sum; do
+  for tool in git make tar realpath curl sha256sum patch; do
     command -v "$tool" >/dev/null 2>&1 || die "required tool not found: $tool"
   done
 }
@@ -107,12 +110,31 @@ fetch_sources() {
   log "Sources ready: $(git -C "${NDS_SRC_DIR}" rev-parse --short HEAD) on $(git -C "${NDS_SRC_DIR}" rev-parse --abbrev-ref HEAD)"
 }
 
+apply_musl_patch() {
+  if [ -f "${MUSL_SRC}/.andes-patched" ]; then
+    log "musl patch already applied"
+    return
+  fi
+  if [ -z "${NDS_MUSL_PATCH}" ] || [ ! -f "${NDS_MUSL_PATCH}" ]; then
+    log "No musl patch found at ${NDS_MUSL_PATCH}"
+    return
+  fi
+
+  log "Applying musl patch $(basename -- "${NDS_MUSL_PATCH}")"
+  ( cd "${MUSL_SRC}" && patch -p1 --batch --forward < "${NDS_MUSL_PATCH}" )
+  # The patch adds an empty riscv32/kstat.h placeholder, which unified
+  # diffs cannot represent.
+  [ -f "${MUSL_SRC}/arch/riscv32/kstat.h" ] || : > "${MUSL_SRC}/arch/riscv32/kstat.h"
+  : > "${MUSL_SRC}/.andes-patched"
+}
+
 fetch_musl() {
   local tarball
   tarball="$(dirname -- "${NDS_SRC_DIR}")/musl-${NDS_MUSL_VERSION}.tar.gz"
 
   if [ -f "${MUSL_SRC}/Makefile" ]; then
     log "Reusing musl ${NDS_MUSL_VERSION} at ${MUSL_SRC}"
+    apply_musl_patch
     return
   fi
 
@@ -131,6 +153,7 @@ fetch_musl() {
   mkdir -p -- "${MUSL_SRC}"
   tar xzf "${tarball}" -C "${MUSL_SRC}" --strip-components=1
   [ -f "${MUSL_SRC}/Makefile" ] || die "musl source extraction failed"
+  apply_musl_patch
 }
 
 prepare_gcc_prerequisites() {
@@ -203,17 +226,17 @@ build_bootstrap_gcc() {
   (
     cd "${BUILD_DIR}/bootstrap-gcc"
     "${GCC_SRC}/configure" \
-      --target="${TARGET}" --prefix="${PREFIX}" \
-      --with-arch="${ARCH}" --with-abi="${ABI}" --with-tune="${CPU}" \
-      --without-headers --disable-shared --disable-threads \
-      --enable-tls --enable-languages=c --disable-libatomic \
-      --disable-libmudflap --disable-libssp --disable-libquadmath \
-      --disable-libgomp --disable-nls --disable-bootstrap \
-      --disable-werror --disable-multilib \
-      --enable-gp-insn-relax-default=yes \
-      --enable-checking=release \
+      --target="${TARGET}" --prefix="${PREFIX}" --with-tune="${CPU}" \
+      --disable-nls --enable-languages=c,c++ --enable-lto \
+      --enable-gp-insn-relax-default=yes --enable-target-optspace \
+      --with-arch="${ARCH}" --with-abi="${ABI}" --disable-werror \
+      --disable-multilib --enable-shared --enable-tls \
+      --disable-libsanitizer --enable-checking=release \
       CFLAGS_FOR_TARGET="-O2 -g -mstrict-align" \
-      CXXFLAGS_FOR_TARGET="-O2 -g -mstrict-align"
+      CXXFLAGS_FOR_TARGET="-O2 -g -mstrict-align" \
+      --without-headers --disable-shared --disable-threads \
+      --disable-libatomic --disable-libmudflap --disable-libssp \
+      --disable-libquadmath --disable-libgomp
     make -j"${NDS_MAKE_JOBS}" inhibit-libc=true all-gcc
     make inhibit-libc=true install-gcc
     make -j"${NDS_MAKE_JOBS}" inhibit-libc=true all-target-libgcc
@@ -228,24 +251,29 @@ build_musl() {
   (
     cd "${BUILD_DIR}/musl"
     CC="${PREFIX}/bin/${TARGET}-gcc" \
-    AR="${PREFIX}/bin/${TARGET}-ar" \
-    RANLIB="${PREFIX}/bin/${TARGET}-ranlib" \
-    CFLAGS="-O2 -g" \
+    CXX="${PREFIX}/bin/${TARGET}-g++" \
+    CFLAGS="-O2 -g -D_LARGEFILE_SOURCE -D_LARGEFILE64_SOURCE -D_FILE_OFFSET_BITS=64" \
     "${MUSL_SRC}/configure" \
-      --host="${TARGET}" --prefix=/usr --libdir=/lib \
-      --disable-gcc-wrapper --enable-shared --enable-static
+      --host="${TARGET}" --prefix=/usr \
+      --disable-werror --enable-shared --enable-obsolete-rpc \
+      --enable-kernel=3.0.0 --with-headers="${SYSROOT}/usr/include" \
+      --with-arch="${ARCH}" --with-abi="${ABI}" \
+      --libdir=/lib${XLEN}/${ABI} --enable-optimize \
+      --disable-gcc-wrapper
     make -j"${NDS_MAKE_JOBS}"
-    make DESTDIR="${SYSROOT}" install-libs install-headers
+    make install DESTDIR="${SYSROOT}"
   )
-  [ -f "${SYSROOT}/lib/libc.so" ] || die "musl libc.so was not installed"
+
+  [ -f "${SYSROOT}/lib${XLEN}/${ABI}/libc.so" ] || die "musl libc.so was not installed"
 
   local sub=""
   case "${ABI}" in
     ilp32|lp64) sub="-sf" ;;
     ilp32f|lp64f) sub="-sp" ;;
-    ilp32d|lp64d) sub="" ;;
   esac
-  ln -sf libc.so "${SYSROOT}/lib/ld-musl-riscv${XLEN}${sub}.so.1"
+  if [ ! -e "${SYSROOT}/lib/ld-musl-riscv${XLEN}${sub}.so.1" ]; then
+    ln -sf "../lib${XLEN}/${ABI}/libc.so" "${SYSROOT}/lib/ld-musl-riscv${XLEN}${sub}.so.1"
+  fi
   cleanup_stage "${BUILD_DIR}/musl"
 }
 
@@ -255,15 +283,12 @@ build_final_gcc() {
   (
     cd "${BUILD_DIR}/final-gcc"
     "${GCC_SRC}/configure" \
-      --target="${TARGET}" --prefix="${PREFIX}" \
-      --with-arch="${ARCH}" --with-abi="${ABI}" --with-tune="${CPU}" \
-      --with-sysroot="${SYSROOT}" \
+      --target="${TARGET}" --prefix="${PREFIX}" --with-tune="${CPU}" \
       --disable-nls --enable-languages=c,c++ --enable-lto \
-      --enable-gp-insn-relax-default=yes \
-      --disable-werror --disable-multilib \
-      --enable-shared --enable-tls --disable-bootstrap \
-      --disable-libmudflap --disable-libssp --disable-libquadmath \
-      --disable-libsanitizer \
+      --enable-gp-insn-relax-default=yes --enable-target-optspace \
+      --with-arch="${ARCH}" --with-abi="${ABI}" --disable-werror \
+      --disable-multilib --enable-shared --enable-tls \
+      --with-sysroot="${SYSROOT}" \
       --enable-checking=release \
       CFLAGS_FOR_TARGET="-O2 -g -mstrict-align" \
       CXXFLAGS_FOR_TARGET="-O2 -g -mstrict-align"
@@ -293,8 +318,8 @@ build_gdb() {
 
 install_target_libs() {
   log "Installing target libraries into the sysroot"
-  mkdir -p -- "${SYSROOT}/lib"
-  cp -a -- "${PREFIX}/${TARGET}/lib/." "${SYSROOT}/lib/"
+  mkdir -p -- "${SYSROOT}/lib${XLEN}/${ABI}"
+  cp -a -- "${PREFIX}/${TARGET}/lib/." "${SYSROOT}/lib${XLEN}/${ABI}/"
 }
 
 write_toolchain_info() {
@@ -307,7 +332,7 @@ write_toolchain_info() {
     echo "arch: ${ARCH}"
     echo "abi: ${ABI}"
     echo "cpu: ${CPU}"
-    echo "libc: musl ${NDS_MUSL_VERSION}"
+    echo "libc: musl ${NDS_MUSL_VERSION} (Andes patch)"
     echo "built: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
     echo "host: $(uname -srm)"
   } > "${PREFIX}/toolchain-info.txt"
